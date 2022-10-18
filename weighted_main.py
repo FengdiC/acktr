@@ -7,11 +7,7 @@ from normalized_env import NormalizedEnv # used only for rescaling actions
 import numpy as np
 import random
 import tensorflow.compat.v1 as tf
-<<<<<<< HEAD
 tf.disable_v2_behavior()
-=======
-# tf.compat.v1.disable_v2_behavior()
->>>>>>> 3fff927f68f405575b8aac4372e40810ecc85ddf
 import time
 import os
 import logging
@@ -109,17 +105,10 @@ class AsyncNGAgent(object):
         for key,value in vars(self.config).items():
             print (key, value)
             hyperparams_txt = hyperparams_txt + "{} {}\n".format(key, value)
-<<<<<<< HEAD
-        #if os.path.exists(self.config.log_dir):
-        #    shutil.rmtree(self.config.log_dir)
-        #os.mkdir(self.config.log_dir)
-        txt_file = open(os.path.join(self.config.log_dir, "hyperparams.txt"), "w")
-=======
         if os.path.exists(self.config.log_dir+'/exper'):
             shutil.rmtree(self.config.log_dir+'/exper')
         os.mkdir(self.config.log_dir+'/exper')
         txt_file = open(os.path.join(self.config.log_dir+'/exper', "hyperparams.txt"), "w")
->>>>>>> 3fff927f68f405575b8aac4372e40810ecc85ddf
         txt_file.write(hyperparams_txt)
         txt_file.close()
         print (self.config.log_dir+'/exper')
