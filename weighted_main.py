@@ -165,7 +165,7 @@ class AsyncNGAgent(object):
                                                  upper_bound_kl=self.config.upper_bound_kl,
                                                  epsilon=self.config.epsilon,
                                                  stats_decay=self.config.stats_decay,
-                                                 async=self.config.async_kfac,
+                                                 async_kfac=self.config.async_kfac,
                                                  kfac_update = self.config.kfac_update,
                                                  cold_iter=self.config.cold_iter,
                                                  weight_decay_dict= wd_dict).minimize(

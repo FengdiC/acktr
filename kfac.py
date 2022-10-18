@@ -10,14 +10,14 @@ KFAC_DEBUG = False
 
 class KfacOptimizer():
 
-    def __init__(self, learning_rate=0.01, momentum=0.9, clip_kl=0.01, upper_bound_kl=False, kfac_update=20, stats_accum_iter=60, full_stats_init=False, cold_iter=100, cold_lr=None, async=False, async_stats=False, epsilon=1e-2, stats_decay=0.95, blockdiag_bias=False, channel_fac=False, factored_damping=False, approxT2=False, use_float64=False, weight_decay_dict={}):
+    def __init__(self, learning_rate=0.01, momentum=0.9, clip_kl=0.01, upper_bound_kl=False, kfac_update=20, stats_accum_iter=60, full_stats_init=False, cold_iter=100, cold_lr=None, async_kfac=False, async_stats=False, epsilon=1e-2, stats_decay=0.95, blockdiag_bias=False, channel_fac=False, factored_damping=False, approxT2=False, use_float64=False, weight_decay_dict={}):
         self._lr = learning_rate
         self._momentum = momentum
         self._clip_kl = clip_kl
         self._upper_bound_kl = upper_bound_kl
         self._channel_fac = channel_fac
         self._kfac_update = kfac_update
-        self._async = async
+        self._async = async_kfac
         self._async_stats = async_stats
         self._epsilon = epsilon
         self._stats_decay = stats_decay
