@@ -257,7 +257,7 @@ class VF(object):
                                              upper_bound_kl=False,
                                              epsilon=self.config.epsilon_vf,
                                              stats_decay=self.config.stats_decay_vf,
-                                             async=self.config.async_kfac,
+                                             async_kfac=self.config.async_kfac,
                                              kfac_update=self.config.kfac_update_vf,
                                              cold_iter=self.config.cold_iter_vf,
                                              weight_decay_dict=wd_dict).minimize(
@@ -433,7 +433,7 @@ class W(object):
                                              upper_bound_kl=False,
                                              epsilon=self.config.epsilon_vf,
                                              stats_decay=self.config.stats_decay_vf,
-                                             async=self.config.async_kfac,
+                                             async_kfac=self.config.async_kfac,
                                              kfac_update=self.config.kfac_update_vf,
                                              cold_iter=self.config.cold_iter_vf,
                                              weight_decay_dict=wd_dict).minimize(
@@ -600,7 +600,7 @@ class VF_W(object):
                                              upper_bound_kl=False,
                                              epsilon=self.config.epsilon_vf,
                                              stats_decay=self.config.stats_decay_vf,
-                                             async=self.config.async_kfac,
+                                             async_kfac=self.config.async_kfac,
                                              kfac_update=self.config.kfac_update_vf,
                                              cold_iter=self.config.cold_iter_vf,
                                              weight_decay_dict=wd_dict).minimize(

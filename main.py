@@ -160,7 +160,7 @@ class AsyncNGAgent(object):
                                                  upper_bound_kl=self.config.upper_bound_kl,
                                                  epsilon=self.config.epsilon,
                                                  stats_decay=self.config.stats_decay,
-                                                 async=self.config.async_kfac,
+                                                 async_kfac=self.config.async_kfac,
                                                  kfac_update = self.config.kfac_update,
                                                  cold_iter=self.config.cold_iter,
                                                  weight_decay_dict= wd_dict).minimize(
@@ -295,6 +295,7 @@ class AsyncNGAgent(object):
               enqueue_threads.extend(qr.create_threads(self.session, coord=coord, start=True))
 
         bestepisoderewards = float("-inf")
+        avgrets = []
 
         while total_timesteps < self.config.max_timesteps:
             # Generating paths.
@@ -355,6 +356,7 @@ class AsyncNGAgent(object):
 
             episoderewards = np.array(
                 [path["rewards"].sum() for path in paths][:-1])
+            avgrets.append(np.mean(episoderewards))
 
             print ("\n********** Iteration %i ************" % i)
             if episoderewards.mean() >= self.env.spec.reward_threshold:
@@ -446,6 +448,7 @@ class AsyncNGAgent(object):
                     print(k + ": " + " " * (40 - len(k)) + str(v))
 
             i += 1
+        return avgrets
 
 
 if __name__ == '__main__':
