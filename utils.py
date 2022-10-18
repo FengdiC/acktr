@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow as tf
+tf.compat.v1.disable_v2_behavior()
 import random
 import scipy.signal
 import scipy.optimize
@@ -89,15 +90,16 @@ def rollout(env, agent, max_pathlength, n_timesteps):
     paths = []
     timesteps_sofar = 0
     while timesteps_sofar < n_timesteps:
-        obs, actions, rewards, rewards_filtered, action_dists = [], [], [], [], []
+        obs, actions, rewards, steps, rewards_filtered, action_dists = [], [], [], [], [], []
         ob = env.reset()
         agent.prev_action *= 0.0
         agent.prev_obs *= 0.0
         terminated = False
 
-        for _ in xrange(max_pathlength):
+        for i in range(max_pathlength):
             action, action_dist, ob = agent.act(ob)
             obs.append(ob)
+            steps.append(i)
             actions.append(action)
             action_dists.append(action_dist)
             res = env.step(action)
@@ -105,20 +107,23 @@ def rollout(env, agent, max_pathlength, n_timesteps):
             ob = res[0]
             rewards.append(res[1])
             rewards_filtered.append(reward_filtered)
+            timesteps_sofar+=1
             if res[2]:
                 terminated = True
+                break
+            if timesteps_sofar == n_timesteps:
                 break
 
         path = {"obs": np.concatenate(np.expand_dims(obs, 0)),
                 "action_dists": np.concatenate(action_dists),
                 "rewards": np.array(rewards),
+                "steps": np.array(steps),
                 "rewards_filtered": np.array(rewards_filtered),
                 "actions": np.array(actions),
                 "terminated": terminated,}
         paths.append(path)
         agent.prev_action *= 0.0
         agent.prev_obs *= 0.0
-        timesteps_sofar += len(path["rewards"])
     return paths, timesteps_sofar
 
 def normalized_columns_initializer(std=1.0):
@@ -233,6 +238,7 @@ class VF(object):
 
         return self.loss, self.loss_fisher, self.vf_weight_loss_dict
 
+
     def init_vf_train_op(self, loss_vf, loss_vf_sampled, wd_dict):
         if self.config.use_adam_vf:
             # 0.001
@@ -298,7 +304,7 @@ class VF(object):
 
     def predict_many(self, paths):
         if self.net is None:
-            return np.zeros(len(path["rewards"]))
+            return np.zeros(len(paths["rewards"]))
         else:
             if self.config.use_pixels:
                 featmat = np.concatenate([self._features_rgb(path) for path in paths])
@@ -319,6 +325,362 @@ class VF(object):
             ret = np.reshape(ret, (ret.shape[0], ))
             return ret
 
+class W(object):
+    coeffs = None
+
+    def __init__(self, config, session):
+        self.net = None
+        self.config = config
+        self.session = session
+        # use exponential average when computing baseline
+        self.averager = tf.train.ExponentialMovingAverage(decay=self.config.moving_average_vf)
+
+    def init_vf(self,paths):
+        if self.config.use_pixels:
+            featmat = np.concatenate([self._features_rgb(path) for path in paths])
+            return self.create_net(featmat.shape[1:],self.config.scale)
+        else:
+            featmat = np.concatenate([self._features(path) for path in paths])
+            return self.create_net([featmat.shape[1]],self.config.scale)
+
+    def fc_net(self, x, weight_loss_dict=None, reuse=None):
+        net = x
+        hidden_sizes = [64,64]
+        for i in range(len(hidden_sizes)):
+            net = linear(net, hidden_sizes[i], "wf/l{}".format(i), initializer=normalized_columns_initializer(1.0), weight_loss_dict=weight_loss_dict, reuse=reuse)
+            net = tf.nn.elu(net)
+
+        net = linear(net, 1, "wf/value", initializer=None, weight_loss_dict=weight_loss_dict, reuse=reuse)
+        net = tf.nn.relu(net)
+        net = tf.reshape(net, (-1, ))
+        return net, weight_loss_dict
+
+    def conv_net(self, x, weight_loss_dict=None, reuse=None):
+
+        # Conv Layers
+        for i in range(2):
+            x = tf.nn.elu(conv2d(x, 32, "wf/l{}".format(i), [3, 3], [2, 2], \
+                initializer=ortho_init(np.sqrt(2)), weight_loss_dict=weight_loss_dict, reuse=reuse))
+
+        x = flatten(x)
+        # One more linear layer
+        x = linear(x, 256, "wf/l{}".format(i+1), \
+            initializer=ortho_init(np.sqrt(2)), weight_loss_dict=weight_loss_dict, reuse=reuse)
+        x = tf.nn.elu(x)
+
+        x = linear(x, 1, "wf/value", \
+            initializer=ortho_init(1), weight_loss_dict=weight_loss_dict, reuse=reuse)
+        x = tf.reshape(x, (-1, ))
+
+        return x, weight_loss_dict
+
+    def create_net(self, shape,scale):
+        self.x = tf.placeholder(tf.float32, shape=[None] + list(shape), name="x")
+        self.y = tf.placeholder(tf.float32, shape=[None], name="y")
+        self.vf_weight_loss_dict = {}
+        with tf.name_scope('train_w'):
+            if self.config.use_pixels:
+                self.net, self.vf_weight_loss_dict = self.conv_net(self.x, self.vf_weight_loss_dict)
+            else:
+                self.net, self.vf_weight_loss_dict = self.fc_net(self.x, self.vf_weight_loss_dict)
+
+        self.bellman_error = (self.net - self.y * scale)
+        l2 = tf.reduce_mean(self.bellman_error * self.bellman_error)
+        # get weight decay losses for value function
+        # vf_losses = tf.get_collection('vf_losses', None)
+
+        self.loss = loss = l2
+
+        var_list_all = tf.trainable_variables()
+        self.var_list = var_list = []
+        for var in var_list_all:
+            if "wf" in str(var.name):
+                var_list.append(var)
+
+        self.update_averages = self.averager.apply(self.var_list)
+
+        # build test net with exponential moving averages for inference
+        with tf.name_scope('test_w'):
+            if self.config.use_pixels:
+                self.test_net, _ = self.conv_net(self.x, None, reuse=True)
+            else:
+                self.test_net, _ = self.fc_net(self.x, None, reuse=True)
+
+        if self.config.use_adam_wf:
+            self.loss_fisher = None
+        else:
+            sample_net = self.net + tf.random_normal(tf.shape(self.net))
+            self.loss_fisher = loss_fisher = tf.reduce_mean(tf.pow(self.net - tf.stop_gradient(sample_net), 2))
+
+        return self.loss, self.loss_fisher, self.vf_weight_loss_dict
+
+
+    def init_vf_train_op(self, loss_vf, loss_vf_sampled, wd_dict):
+        if self.config.use_adam_wf:
+            # 0.001
+            self.update_op = tf.train.AdamOptimizer(learning_rate=0.001).minimize(loss_vf)
+            self.queue_runner = None
+        elif self.config.use_sgd_vf:
+            # 0.001*(1.-0.9), 0.9
+            self.update_op = tf.train.MomentumOptimizer(0.001*(1.-0.9), 0.9).minimize(loss_vf)
+            self.queue_runner = None
+        else:
+            self.update_op, self.queue_runner = kfac.KfacOptimizer(
+                                             learning_rate=self.config.lr_vf,
+                                             cold_lr=self.config.lr_wf/3.,
+                                             momentum=self.config.mom_vf,
+                                             clip_kl=self.config.kl_desired_vf,
+                                             upper_bound_kl=False,
+                                             epsilon=self.config.epsilon_vf,
+                                             stats_decay=self.config.stats_decay_vf,
+                                             async=self.config.async_kfac,
+                                             kfac_update=self.config.kfac_update_vf,
+                                             cold_iter=self.config.cold_iter_vf,
+                                             weight_decay_dict=wd_dict).minimize(
+                                                  loss_vf,
+                                                  loss_vf_sampled,
+                                                  self.var_list)
+
+        with tf.control_dependencies([self.update_op]):
+            self.train = tf.group(self.update_averages)
+
+        return self.train, self.queue_runner
+
+    def _features(self, path):
+        o = path["obs"].astype('float32')
+        o = o.reshape(o.shape[0], -1)
+        act = path["action_dists"].astype('float32')
+        l = len(path["rewards"])
+        al = np.arange(l).reshape(-1, 1) / 10.0
+        ret = np.concatenate([o, act, al, np.ones((l, 1))], axis=1)
+        return ret
+
+    def _features_rgb(self, path):
+        o = path["obs"].astype('float32')
+        return o
+
+    def get_feed_dict(self, paths):
+        if self.config.use_pixels:
+            featmat = np.concatenate([self._features_rgb(path) for path in paths])
+        else:
+            featmat = np.concatenate([self._features(path) for path in paths])
+        steps = np.concatenate([path["steps"] for path in paths])
+        return {self.x: featmat, self.y: self.config.gamma**steps}
+
+    def fit(self, paths):
+        if self.config.use_pixels:
+            featmat = np.concatenate([self._features_rgb(path) for path in paths])
+        else:
+            featmat = np.concatenate([self._features(path) for path in paths])
+        if self.net is None:
+            self.create_net(featmat.shape[1:],self.config.scale)
+        steps = np.concatenate([path["steps"] for path in paths])
+
+        self.session.run(self.train, {self.x: featmat, self.y: self.config.gamma**steps})
+
+    def predict_many(self, paths):
+        if self.net is None:
+            return np.zeros(len(paths["rewards"]))
+        else:
+            if self.config.use_pixels:
+                featmat = np.concatenate([self._features_rgb(path) for path in paths])
+            else:
+                featmat = np.concatenate([self._features(path) for path in paths])
+        ret = self.session.run(self.test_net, {self.x: featmat})
+        ret = np.reshape(ret, (ret.shape[0], ))
+        return ret
+
+    def predict(self, path):
+        if self.net is None:
+            return np.zeros(len(path["rewards"]))
+        else:
+            if self.config.use_pixels:
+                ret = self.session.run(self.test_net, {self.x: self._features_rgb(path)})
+            else:
+                ret = self.session.run(self.test_net, {self.x: self._features(path)})
+            ret = np.reshape(ret, (ret.shape[0], ))
+            return ret
+
+class VF_W(object):
+    coeffs = None
+
+    def __init__(self, config, session):
+        self.net = None
+        self.config = config
+        self.session = session
+        # use exponential average when computing baseline
+        self.averager = tf.train.ExponentialMovingAverage(decay=self.config.moving_average_vf)
+
+    def init_vf(self,paths):
+        featmat = np.concatenate([self._features(path) for path in paths])
+        return self.create_shared_net([featmat.shape[1]],self.config.gamma_coef,self.config.scale)
+
+    def create_shared_net(self, shape, gamma_coef=1.0,scale=1.0):
+        self.x = tf.placeholder(tf.float32, shape=[None] + list(shape), name="x")
+        self.y = tf.placeholder(tf.float32, shape=[None], name="y")
+        self.y_2 = tf.placeholder(tf.float32, shape=[None], name="y2")
+        self.vf_weight_loss_dict = {}
+        with tf.name_scope('train_vf'):
+            if self.config.use_pixels:
+                self.net, self.vf_weight_loss_dict = self.conv_net(self.x, self.vf_weight_loss_dict)
+            else:
+                net = self.x
+                hidden_sizes = [64, 64]
+                for i in range(len(hidden_sizes)):
+                    net = linear(net, hidden_sizes[i], "vf/l{}".format(i),
+                                 initializer=normalized_columns_initializer(1.0), weight_loss_dict=self.vf_weight_loss_dict,
+                                 reuse=None)
+                    net = tf.nn.elu(net)
+
+                v = linear(net, 1, "vf/value", initializer=None, weight_loss_dict=self.vf_weight_loss_dict, reuse=None)
+                self.v = tf.reshape(v, (-1,))
+                w = linear(net, 1, "vf/weight", initializer=None, weight_loss_dict=self.vf_weight_loss_dict, reuse=None)
+                w = tf.nn.relu(w)
+                self.w = tf.reshape(w, (-1,))
+
+        self.bellman_error = (self.v - self.y)**2 + gamma_coef * (self.w - scale * self.y_2) ** 2
+        l2 = tf.reduce_mean(self.bellman_error)
+        # get weight decay losses for value function
+        vf_losses = tf.get_collection('vf_losses', None)
+
+        self.loss = loss = l2 + tf.add_n(vf_losses)
+
+
+        var_list_all = tf.trainable_variables()
+        self.var_list = var_list = []
+        for var in var_list_all:
+            if "vf" in str(var.name):
+                var_list.append(var)
+
+        self.update_averages = self.averager.apply(self.var_list)
+
+        # build test net with exponential moving averages for inference
+        with tf.name_scope('test_vf'):
+            if self.config.use_pixels:
+                self.test_net, _ = self.conv_net(self.x, None, reuse=True)
+            else:
+                net = self.x
+                hidden_sizes = [64, 64]
+                for i in range(len(hidden_sizes)):
+                    net = linear(net, hidden_sizes[i], "vf/l{}".format(i),
+                                 initializer=normalized_columns_initializer(1.0),
+                                 weight_loss_dict=None,
+                                 reuse=True)
+                    net = tf.nn.elu(net)
+
+                v = linear(net, 1, "vf/value", initializer=None, weight_loss_dict=None, reuse=True)
+                self.test_v = tf.reshape(v, (-1,))
+                w = linear(net, 1, "vf/weight", initializer=None, weight_loss_dict=None, reuse=True)
+                w = tf.nn.relu(w)
+                self.test_w = tf.reshape(w, (-1,))
+
+        if self.config.use_adam_vf:
+            self.loss_fisher = None
+        else:
+            sample_net = self.v + tf.random_normal(tf.shape(self.v))
+            self.loss_fisher = loss_fisher = tf.reduce_mean(tf.pow(self.v - tf.stop_gradient(sample_net), 2))
+
+        return self.loss, self.loss_fisher, self.vf_weight_loss_dict
+
+    def init_vf_train_op(self, loss_vf, loss_vf_sampled, wd_dict):
+        if self.config.use_adam_vf:
+            # 0.001
+            self.update_op = tf.train.AdamOptimizer(learning_rate=0.001).minimize(loss_vf)
+            self.queue_runner = None
+        elif self.config.use_sgd_vf:
+            # 0.001*(1.-0.9), 0.9
+            self.update_op = tf.train.MomentumOptimizer(0.001*(1.-0.9), 0.9).minimize(loss_vf)
+            self.queue_runner = None
+        else:
+            self.update_op, self.queue_runner = kfac.KfacOptimizer(
+                                             learning_rate=self.config.lr_vf,
+                                             cold_lr=self.config.lr_vf/3.,
+                                             momentum=self.config.mom_vf,
+                                             clip_kl=self.config.kl_desired_vf,
+                                             upper_bound_kl=False,
+                                             epsilon=self.config.epsilon_vf,
+                                             stats_decay=self.config.stats_decay_vf,
+                                             async=self.config.async_kfac,
+                                             kfac_update=self.config.kfac_update_vf,
+                                             cold_iter=self.config.cold_iter_vf,
+                                             weight_decay_dict=wd_dict).minimize(
+                                                  loss_vf,
+                                                  loss_vf_sampled,
+                                                  self.var_list)
+
+        with tf.control_dependencies([self.update_op]):
+            self.train = tf.group(self.update_averages)
+
+        return self.train, self.queue_runner
+
+    def _features(self, path):
+        o = path["obs"].astype('float32')
+        o = o.reshape(o.shape[0], -1)
+        act = path["action_dists"].astype('float32')
+        l = len(path["rewards"])
+        al = np.arange(l).reshape(-1, 1) / 10.0
+        ret = np.concatenate([o, act, al, np.ones((l, 1))], axis=1)
+        return ret
+
+    def _features_rgb(self, path):
+        o = path["obs"].astype('float32')
+        return o
+
+    def get_feed_dict(self, paths):
+        if self.config.use_pixels:
+            featmat = np.concatenate([self._features_rgb(path) for path in paths])
+        else:
+            featmat = np.concatenate([self._features(path) for path in paths])
+        returns = np.concatenate([path["returns"] for path in paths])
+        steps = np.concatenate([path["steps"] for path in paths])
+        return {self.x: featmat, self.y: returns, self.y_2:self.config.gamma**steps}
+
+    def fit(self, paths):
+        if self.config.use_pixels:
+            featmat = np.concatenate([self._features_rgb(path) for path in paths])
+        else:
+            featmat = np.concatenate([self._features(path) for path in paths])
+        if self.net is None:
+            self.create_shared_net(featmat.shape[1:],self.config.gamma_coef,self.config.scale)
+        returns = np.concatenate([path["returns"] for path in paths])
+        steps = np.concatenate([path["steps"] for path in paths])
+
+        self.session.run(self.train, {self.x: featmat, self.y: returns, self.y_2:self.config.gamma**steps})
+
+    def predict_weight(self, paths):
+        if self.config.use_pixels:
+            featmat = np.concatenate([self._features_rgb(path) for path in paths])
+        else:
+            featmat = np.concatenate([self._features(path) for path in paths])
+        if self.w is None:
+            self.create_shared_net(featmat.shape[1:],self.config.gamma_coef,self.config.scale)
+
+        ret = self.session.run(self.test_w, {self.x: featmat})
+        return np.squeeze(ret)
+
+    def predict_many(self, paths):
+        if self.v is None:
+            return np.zeros(len(path["rewards"]))
+        else:
+            if self.config.use_pixels:
+                featmat = np.concatenate([self._features_rgb(path) for path in paths])
+            else:
+                featmat = np.concatenate([self._features(path) for path in paths])
+        ret = self.session.run(self.test_v, {self.x: featmat})
+        ret = np.reshape(ret, (ret.shape[0], ))
+        return ret
+
+    def predict(self, path):
+        if self.v is None:
+            return np.zeros(len(path["rewards"]))
+        else:
+            if self.config.use_pixels:
+                ret = self.session.run(self.test_net, {self.x: self._features_rgb(path)})
+            else:
+                ret = self.session.run(self.test_v, {self.x: self._features(path)})
+            ret = np.reshape(ret, (ret.shape[0], ))
+            return ret
+
 def linear(x, size, name, initializer=None, bias_init=0, weight_loss_dict=None, reuse=None):
 #    assert len(name.split('/')) == 2 # make sure that name has format policy/l1 or vf/l1
 
@@ -327,7 +689,7 @@ def linear(x, size, name, initializer=None, bias_init=0, weight_loss_dict=None, 
         b = tf.get_variable("b", [size], initializer=tf.constant_initializer(bias_init))
 
         if weight_decay_fc > 0.0 and weight_loss_dict is not None:
-            weight_decay = tf.mul(tf.nn.l2_loss(w), weight_decay_fc, name='weight_decay_loss')
+            weight_decay = tf.multiply(tf.nn.l2_loss(w), weight_decay_fc, name='weight_decay_loss')
             if weight_loss_dict is not None:
                 weight_loss_dict[w] = weight_decay_fc
                 weight_loss_dict[b] = 0.0
@@ -341,7 +703,7 @@ def linearnobias(x, size, name, initializer=None, weight_loss_dict=None, reuse=N
         w = tf.get_variable(name + "/w", [x.get_shape()[1], size], initializer=initializer)
 
         if weight_decay_fc > 0.0 and weight_loss_dict is not None:
-            weight_decay = tf.mul(tf.nn.l2_loss(w), weight_decay_fc, name='weight_decay_loss')
+            weight_decay = tf.multiply(tf.nn.l2_loss(w), weight_decay_fc, name='weight_decay_loss')
             if weight_loss_dict is not None:
                 weight_loss_dict[w] = weight_decay_fc
             tf.add_to_collection(name.split('/')[0] + '_' + 'losses', weight_decay)
@@ -481,7 +843,7 @@ def create_policy_net(obs, hidden_sizes, nonlinear, action_size):
     log_std = tf.Variable(tf.zeros([action_size]), name="policy/log_std")
     log_std_expand = tf.expand_dims(log_std, 0)
     std = tf.tile(tf.exp(log_std_expand), [tf.shape(mean)[0], 1])
-    output = tf.concat(1, [tf.reshape(mean, [-1, action_size]), tf.reshape(std, [-1, action_size])])
+    output = tf.concat( [tf.reshape(mean, [-1, action_size]), tf.reshape(std, [-1, action_size])],axis=1)
 
     return output, weight_loss_dict
 

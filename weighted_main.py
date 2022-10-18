@@ -32,10 +32,15 @@ parser.add_argument('-l', '--lam', default=0.97, type=float,
                     help="Lambda value to reduce variance see GAE")
 parser.add_argument('-s', '--seed', default=1, type=int,
                     help="Seed")
-parser.add_argument('--naive', default=False, type=bool,
-                    help="If the algorithm adds the existing correction")
+parser.add_argument('--agent', default='shared_gc', type=str,
+                    help="algorithm description")
 parser.add_argument('--log_dir', default="./logs/", type=str,
                     help="Folder to save")
+# CORRECTION NETWORK HYPERPARAMETERS
+parser.add_argument('--scale', default=60.0, type=float, help="Weight scaling up")
+parser.add_argument('--gamma_coef', default=1.0, type=float, help="Coefficient for correction loss")
+parser.add_argument('--lr-wf', default=0.003, type=float, help="Learning Rate for correction network")
+parser.add_argument('--use-adam-wf', default=False, type=bool, help="use adam for correction")
 # NEURAL NETWORK ARCHITECTURE
 parser.add_argument('--weight-decay-fc', default=3e-4, type=float, help="weight decay for fc layer")
 parser.add_argument('--weight-decay-conv', default=4e-3, type=float, help="weight decay for conv layer")
@@ -57,8 +62,8 @@ parser.add_argument('--cold-iter', default=1, type=int,
 parser.add_argument('--epsilon', default=1e-2, type=float, help="Damping factor")
 parser.add_argument('--stats-decay', default=0.99,type=float, help="decay running average of stats factor")
 # VALUE FUNCTION HYPERPARAMETERS
-parser.add_argument('--use-adam-vf', default=False, type=bool, help="use adam for vf")
-parser.add_argument('--use-sgd-vf', default=False, type=bool, help="use sgd with momentum for vf")
+parser.add_argument('--use_adam_vf', default=False, type=bool, help="use adam for vf")
+parser.add_argument('--use_sgd_vf', default=False, type=bool, help="use sgd with momentum for vf")
 parser.add_argument('--lr-vf', default=0.003, type=float, help="Learning Rate vf")
 parser.add_argument('--cold-lr-vf', default=0.001, type=float, help="Learning Rate vf")
 parser.add_argument('--mom-vf', default=0.9, type=float, help="Momentum")
@@ -188,12 +193,8 @@ class AsyncNGAgent(object):
         logp_n = loglik(self.action, action_dist_n, self.env.action_space.shape[0])
         oldlogp_n = loglik(self.action, self.oldaction_dist, self.env.action_space.shape[0])
 
-        self.surr = surr = -tf.reduce_mean(tf.exp(logp_n - oldlogp_n) * self.advant)
-        self.surr_fisher = surr_fisher = -tf.reduce_mean(tf.exp(logp_n - oldlogp_n))
-
-        if self.config.naive:
-            self.surr = surr = -tf.reduce_mean(tf.exp(logp_n - oldlogp_n) * self.advant*self.weight)
-            self.surr_fisher = surr_fisher = -tf.reduce_mean(tf.exp(logp_n - oldlogp_n) * tf.sqrt(self.weight))
+        self.surr = surr = -tf.reduce_mean(tf.exp(logp_n - oldlogp_n) * self.advant*self.weight)
+        self.surr_fisher = surr_fisher = -tf.reduce_mean(tf.exp(logp_n - oldlogp_n) * tf.sqrt(self.weight))
 
         self.kl = kl = tf.reduce_mean(kl_div(self.oldaction_dist, action_dist_n, self.env.action_space.shape[0]))
 
@@ -258,8 +259,16 @@ class AsyncNGAgent(object):
             config.timesteps_per_batch)
 
         ## create VF
-        self.vf = VF(self.config, self.session) # value function
-        loss_vf, loss_vf_sampled, vf_wd_dict = self.vf.init_vf(paths) # init value function
+        if self.config.agent =='weighted':
+            self.vf = VF(self.config, self.session)
+            self.wf = W(self.config,self.session)
+            loss_vf, loss_vf_sampled, vf_wd_dict = self.vf.init_vf(paths)  # init value function
+            loss_wf, loss_wf_sampled, wf_wd_dict = self.wf.init_vf(paths)  # init value function
+            train_op_wf, qrs_wf = self.wf.init_vf_train_op(loss_wf, loss_wf_sampled, wf_wd_dict)
+            print('weighted')
+        else:
+            self.vf = VF_W(self.config, self.session) # value function
+            loss_vf, loss_vf_sampled, vf_wd_dict = self.vf.init_vf(paths) # init value function
 
         # train op for policy net
         train_op_policy, qrs_policy = self.init_policy_train_op(loss_policy, loss_policy_sampled, policy_wd_dict)
@@ -295,6 +304,7 @@ class AsyncNGAgent(object):
               enqueue_threads.extend(qr.create_threads(self.session, coord=coord, start=True))
 
         bestepisoderewards = float("-inf")
+        avgrets= []
 
         while total_timesteps < self.config.max_timesteps:
             # Generating paths.
@@ -337,7 +347,11 @@ class AsyncNGAgent(object):
             action_n = np.concatenate([path["actions"] for path in paths])
             baseline_n = np.concatenate([path["baseline"] for path in paths])
             returns_n = np.concatenate([path["returns"] for path in paths])
-            steps_n = np.concatenate([path["steps"] for path in paths])
+            if self.config.agent == 'weighted':
+                weights_n = self.wf.predict_many(paths) / self.config.scale
+                print('weight computed for non-shared')
+            else:
+                weights_n = self.vf.predict_weight(paths)/ self.config.scale
 
             # Standardize the advantage function to have mean=0 and std=1.
             advant_n = np.concatenate([path["advant"] for path in paths])
@@ -350,11 +364,12 @@ class AsyncNGAgent(object):
             feed = {self.obs: obs_n,
                     self.action: action_n,
                     self.advant: advant_n,
-                    self.weight: config.gamma**steps_n,
+                    self.weight: weights_n,
                     self.oldaction_dist: action_dist_n}
 
             episoderewards = np.array(
                 [path["rewards"].sum() for path in paths][:-1])
+            avgrets.append(episoderewards.mean())
 
             print ("\n********** Iteration %i ************" % i)
             if episoderewards.mean() >= self.env.spec.reward_threshold:
@@ -374,16 +389,30 @@ class AsyncNGAgent(object):
 
             if self.train:
                 # update parameters
-                vf_feed_dict = self.vf.get_feed_dict(paths)
+                if self.config.agent=='weighted':
+                    vf_feed_dict = self.vf.get_feed_dict(paths)
+                    wf_feed_dict = self.wf.get_feed_dict(paths)
+                else:
+                    vf_feed_dict = self.vf.get_feed_dict(paths)
 
                 # update critic's parameters
                 if self.config.use_adam_vf or self.config.use_sgd_vf:
                     for _ in range(self.config.train_iter_vf*2):
-                        self.session.run(train_op_vf, feed_dict=vf_feed_dict) ## 1st order
+                        if self.config.agent == 'weighted':
+                            self.session.run(train_op_vf, feed_dict=vf_feed_dict) ## 1st order
+                            self.session.run(train_op_wf, feed_dict=wf_feed_dict)  ## 1st order
+                            print('correction network update for non-shared')
+                        else:
+                            self.session.run(train_op_vf, feed_dict=vf_feed_dict)  ## 1st order
                 else:
                     t1_vf = time.time()
                     for _ in range(self.config.train_iter_vf):
-                        self.session.run(train_op_vf, feed_dict=vf_feed_dict) ## kfac
+                        if self.config.agent == 'weighted':
+                            self.session.run(train_op_vf, feed_dict=vf_feed_dict) ## kfac
+                            self.session.run(train_op_wf, feed_dict=wf_feed_dict)  ## kfac
+                            # print('correction network update for non-shared')
+                        else:
+                            self.session.run(train_op_vf, feed_dict=vf_feed_dict)  ## kfac
                     t2_vf = time.time()
                     print ("Time for VF update")
                     print (t2_vf - t1_vf)
@@ -446,11 +475,14 @@ class AsyncNGAgent(object):
                     print(k + ": " + " " * (40 - len(k)) + str(v))
 
             i += 1
+        return avgrets
 
 
 if __name__ == '__main__':
 
     args = parser.parse_args()
+    print(args.use_adam_vf)
+    print(args.use_sgd_vf)
     random.seed(args.seed)
     np.random.seed(args.seed)
     tf.set_random_seed(args.seed)

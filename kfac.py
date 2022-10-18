@@ -1,4 +1,5 @@
 import tensorflow as tf
+tf.compat.v1.disable_v2_behavior()
 import numpy as np
 import re
 from kfac_utils import *
@@ -122,7 +123,7 @@ class KfacOptimizer():
 
         for t, param in zip(g, varlist):
             if KFAC_DEBUG:
-                print 'get factor for ', param.name
+                print ('get factor for ', param.name)
             factors = searchFactors(t, graph)
             factorTensors[param] = factors
 
@@ -152,12 +153,12 @@ class KfacOptimizer():
         for key in ['fpropFactors', 'bpropFactors']:
             for i, param in enumerate(varlist):
                 if len(factorTensors[param][key]) > 0:
-                    if not factorTensors[param].has_key(key + '_concat'):
+                    if not key + '_concat' in factorTensors[param]:
                         name_scope = factorTensors[param][key][0].name.split(':')[
                             0]
                         with tf.name_scope(name_scope):
                             factorTensors[param][key +
-                                                 '_concat'] = tf.concat(0, factorTensors[param][key])
+                                                 '_concat'] = tf.concat(factorTensors[param][key],axis=0)
                 else:
                     factorTensors[param][key + '_concat'] = None
                 for j, param2 in enumerate(varlist[(i + 1):]):
@@ -169,7 +170,7 @@ class KfacOptimizer():
 
         if KFAC_DEBUG:
             for items in zip(varlist, fpropTensors, bpropTensors, opTypes):
-                print items[0].name, factorTensors[item]
+                print (items[0].name, factorTensors[item])
         self.factors = factorTensors
         return factorTensors
 
@@ -213,7 +214,7 @@ class KfacOptimizer():
                                        'assnBias': factors[var]['assnBias'],
                                        }
                     if fpropFactor is not None:
-                        if not tmpStatsCache.has_key(fpropFactor):
+                        if not fpropFactor in tmpStatsCache:
                             if opType == 'Conv2D':
                                 Kh = var.get_shape()[0]
                                 Kw = var.get_shape()[1]
@@ -260,7 +261,7 @@ class KfacOptimizer():
                         # no need to collect backward stats for bias vectors if
                         # using homogeneous coordinates
                         if not((not self._blockdiag_bias) and self.stats[var]['assnWeights']):
-                            if not tmpStatsCache.has_key(bpropFactor):
+                            if not bpropFactor in tmpStatsCache:
                                 slot_bpropFactor_stats = tf.Variable(tf.diag(tf.ones([bpropFactor.get_shape(
                                 )[-1]])) * self._diag_init_coeff, name='KFAC_STATS/' + bpropFactor.op.name, trainable=False)
                                 self.stats[var]['bprop_concat_stats'].append(
@@ -302,7 +303,7 @@ class KfacOptimizer():
             SVD_factors = {}
             for stats_var in fpropStats_vars:
                 stats_var_dim = int(stats_var.get_shape()[0])
-                if not statsUpdates_cache.has_key(stats_var):
+                if not stats_var in statsUpdates_cache:
                     old_fpropFactor = fpropFactor
                     B = (tf.shape(fpropFactor)[0])  # batch size
                     if opType == 'Conv2D':
@@ -325,7 +326,7 @@ class KfacOptimizer():
                                 # patches = B x Oh x Ow x (KH xKW x C)
                             if len(SVD_factors) == 0:
                                 if KFAC_DEBUG:
-                                    print 'approx %s act factor with rank-1 SVD factors' % (var.name)
+                                    print ('approx %s act factor with rank-1 SVD factors' % (var.name))
                                 # find closest rank-1 approx to the feature map
                                 S, U, V = tf.batch_svd(tf.reshape(
                                     fpropFactor, [-1, KH * KW, C]))
@@ -348,7 +349,7 @@ class KfacOptimizer():
 
                             if self._approxT2:
                                 if KFAC_DEBUG:
-                                    print 'approxT2 act fisher for %s' % (var.name)
+                                    print ('approxT2 act fisher for %s' % (var.name))
                                 # T^2 terms * 1/T^2, size: B x C
                                 fpropFactor = tf.reduce_mean(patches, [1, 2])
                             else:
@@ -360,12 +361,11 @@ class KfacOptimizer():
                         if opType == 'Conv2D' and not self._approxT2:
                             # correct padding for numerical stability (we
                             # divided out OhxOw from activations for T1 approx)
-                            fpropFactor = tf.concat(1, [fpropFactor, tf.ones(
-                                [tf.shape(fpropFactor)[0], 1]) / Oh / Ow])
+                            fpropFactor = tf.concat( [fpropFactor, tf.ones(
+                                [tf.shape(fpropFactor)[0], 1]) / Oh / Ow], axis=1)
                         else:
                             # use homogeneous coordinates
-                            fpropFactor = tf.concat(
-                                1, [fpropFactor, tf.ones([tf.shape(fpropFactor)[0], 1])])
+                            fpropFactor = tf.concat([fpropFactor, tf.ones([tf.shape(fpropFactor)[0], 1])],axis=1)
 
                     # average over the number of data points in a batch
                     # divided by B
@@ -380,7 +380,7 @@ class KfacOptimizer():
 
             for stats_var in bpropStats_vars:
                 stats_var_dim = int(stats_var.get_shape()[0])
-                if not statsUpdates_cache.has_key(stats_var):
+                if not stats_var in statsUpdates_cache:
                     old_bpropFactor = bpropFactor
                     bpropFactor_shape = bpropFactor.get_shape()
                     B = tf.shape(bpropFactor)[0]  # batch size
@@ -389,7 +389,7 @@ class KfacOptimizer():
                         if fpropFactor is not None:
                             if self._approxT2:
                                 if KFAC_DEBUG:
-                                    print 'approxT2 grad fisher for %s' % (var.name)
+                                    print ('approxT2 grad fisher for %s' % (var.name))
                                 bpropFactor = tf.reduce_sum(
                                     bpropFactor, [1, 2])  # T^2 terms * 1/T^2
                             else:
@@ -400,7 +400,7 @@ class KfacOptimizer():
                             # structure does not apply here. summing over
                             # spatial locations
                             if KFAC_DEBUG:
-                                print 'block diag approx fisher for %s' % (var.name)
+                                print ('block diag approx fisher for %s' % (var.name))
                             bpropFactor = tf.reduce_sum(bpropFactor, [1, 2])
 
                     # assume sampled loss is averaged. TO-DO:figure out better
@@ -509,7 +509,7 @@ class KfacOptimizer():
                 for var in stats:
                     for key in ['fprop_concat_stats', 'bprop_concat_stats']:
                         for stats_var in stats[var][key]:
-                            if not tmpEigenCache.has_key(stats_var):
+                            if not stats_var in tmpEigenCache:
                                 stats_dim = stats_var.get_shape()[1].value
                                 e = tf.Variable(tf.ones(
                                     [stats_dim]), name='KFAC_FAC/' + stats_var.name.split(':')[0] + '/e', trainable=False)
@@ -541,7 +541,7 @@ class KfacOptimizer():
                 copied_list = []
                 for item in var_list:
                     if item is not None:
-                        if not redundant_stats.has_key(item):
+                        if not item in redundant_stats:
                             if self._use_float64:
                                 redundant_stats[item] = tf.cast(
                                     tf.identity(item), tf.float64)
@@ -563,7 +563,7 @@ class KfacOptimizer():
             # removeNone(stats[1])):
             with tf.control_dependencies([]):
                 for stats_var in stats_eigen:
-                    if not computedEigen.has_key(stats_var):
+                    if not stats_var in computedEigen:
                         eigens = tf.self_adjoint_eig(stats_var)
                         e = eigens[0]
                         Q = eigens[1]
@@ -654,8 +654,7 @@ class KfacOptimizer():
                     # TO-DO: figure out how to factorize bias grad
                     # stack bias grad
                     var_assnBias = self.stats[var]['assnBias']
-                    grad = tf.concat(
-                        0, [grad, tf.expand_dims(grad_dict[var_assnBias], 0)])
+                    grad = tf.concat( [grad, tf.expand_dims(grad_dict[var_assnBias], 0)],axis=0)
 
                 # project gradient to eigen space and reshape the eigenvalues
                 # for broadcasting
@@ -683,14 +682,14 @@ class KfacOptimizer():
                 #####
                 # whiten using eigenvalues
                 weightDecayCoeff = 0.
-                if self._weight_decay_dict.has_key(var):
+                if var in self._weight_decay_dict:
                     weightDecayCoeff = self._weight_decay_dict[var]
                     if KFAC_DEBUG:
-                        print 'weight decay coeff for %s is %f' % (var.name, weightDecayCoeff)
+                        print ('weight decay coeff for %s is %f' % (var.name, weightDecayCoeff))
 
                 if self._factored_damping:
                     if KFAC_DEBUG:
-                        print 'use factored damping for %s' % (var.name)
+                        print ('use factored damping for %s' % (var.name))
                     coeffs = 1.
                     num_factors = len(eigVals)
                     # compute the ratio of two trace norm of the left and right
@@ -768,7 +767,7 @@ class KfacOptimizer():
             grad = grad_dict[var]
             ### clipping ###
             if KFAC_DEBUG:
-                print 'apply clipping to %s' % (var.name)
+                print ('apply clipping to %s' % (var.name))
 
             local_vg = tf.reduce_sum(grad * g * (self._lr * self._lr))
             #local_vg = tf.reduce_sum(grad * g)  # CHANGED MAJOR
@@ -776,7 +775,7 @@ class KfacOptimizer():
 
         # recale everything
         if KFAC_DEBUG:
-            print 'apply vFv clipping'
+            print ('apply vFv clipping')
 
         scaling = tf.minimum(1., tf.sqrt(self._clip_kl / vg))
         if KFAC_DEBUG:
@@ -806,7 +805,7 @@ class KfacOptimizer():
         qr = None
         # launch eigen-decomp on a queue thread
         if self._async:
-            print 'Use async eigen decomp'
+            print ('Use async eigen decomp')
             # get a list of factor loading tensors
             factorOps_dummy = self.computeStatsEigen()
 
@@ -858,7 +857,7 @@ class KfacOptimizer():
 
                 with tf.control_dependencies([updateFactorOps]):
                     def gradOp():
-                        return g
+                        return list(g)
 
                     def getKfacGradOp():
                         return self.getKfacPrecondUpdates(g, varlist)
