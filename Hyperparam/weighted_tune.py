@@ -10,16 +10,17 @@ import itertools
 import numpy as np
 import gym
 import random
-import tensorflow as tf
-tf.compat.v1.disable_v2_behavior()
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
-param = {'scale': [20,40,60,80,100],'lr_wf':[0.01,0.003,0.001]}
+param = {'scale': [20,40,60,80,100],'lr_wf':[0.01,0.003,0.001],'kl_desired':[0.002,0.001,6e-4]}
 
 args = parser.parse_args()
 
 name = ['acktr','Hopper']
 name.append('weighted')
 name.append(str(args.seed))
+name.append(str(args.kl_desired))
 print("hyperparam", '-'.join(name))
 
 logger.configure(args.log_dir, ['csv'], log_suffix='-'.join(name))
@@ -28,8 +29,9 @@ for values in list(itertools.product(param['scale'], param['lr_wf'])):
     args.scale=values[0]
     args.lr_wf=values[1]
     args.agent='weighted'
-    # args.mom=values[2]
+    # args.kl_desired=values[2]
     returns = []
+    seeds = range(3)
 
     checkpoint = 2500
     random.seed(args.seed)
@@ -56,3 +58,5 @@ for values in list(itertools.product(param['scale'], param['lr_wf'])):
     for n in range(ret.shape[0]):
         logger.logkv(str((n + 1) * checkpoint), ret[n])
     logger.dumpkvs()
+
+    tf.reset_default_graph()

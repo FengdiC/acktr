@@ -10,16 +10,17 @@ import itertools
 import numpy as np
 import gym
 import random
-import tensorflow as tf
-tf.compat.v1.disable_v2_behavior()
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
-param = {'kl_desired': [0.002,0.001,6e-4],'lr':[0.06,0.03,0.01,0.006]}
+param = {'kl_desired': [0.002,0.001,6e-4],'lr':[0.06,0.03,0.01,0.006],'mom':[0.8,0.9,0.95]}
 
 args = parser.parse_args()
 
 name = ['acktr','Hopper']
 name.append('naive')
 name.append(str(args.seed))
+name.append(str(args.mom))
 print("hyperparam", '-'.join(name))
 
 logger.configure(args.log_dir, ['csv'], log_suffix='-'.join(name))
@@ -29,6 +30,7 @@ for values in list(itertools.product(param['kl_desired'], param['lr'])):
     args.lr=values[1]
     # args.mom=values[2]
     returns = []
+    seeds = range(3)
 
     checkpoint = 2500
     random.seed(args.seed)
@@ -47,7 +49,6 @@ for values in list(itertools.product(param['kl_desired'], param['lr'])):
     print(ret.shape)
     returns.append(ret)
     name = [str(k) for k in values]
-    name.append(str(args.seed))
     name.append(str(args.mom))
     name.append('naive')
     name.append(str(args.seed))
@@ -56,3 +57,5 @@ for values in list(itertools.product(param['kl_desired'], param['lr'])):
     for n in range(ret.shape[0]):
         logger.logkv(str((n + 1) * checkpoint), ret[n])
     logger.dumpkvs()
+    tf.reset_default_graph()
+
