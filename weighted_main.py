@@ -7,7 +7,11 @@ from normalized_env import NormalizedEnv # used only for rescaling actions
 import numpy as np
 import random
 import tensorflow.compat.v1 as tf
+<<<<<<< HEAD
 tf.disable_v2_behavior()
+=======
+# tf.compat.v1.disable_v2_behavior()
+>>>>>>> 3fff927f68f405575b8aac4372e40810ecc85ddf
 import time
 import os
 import logging
@@ -105,13 +109,20 @@ class AsyncNGAgent(object):
         for key,value in vars(self.config).items():
             print (key, value)
             hyperparams_txt = hyperparams_txt + "{} {}\n".format(key, value)
+<<<<<<< HEAD
         #if os.path.exists(self.config.log_dir):
         #    shutil.rmtree(self.config.log_dir)
         #os.mkdir(self.config.log_dir)
         txt_file = open(os.path.join(self.config.log_dir, "hyperparams.txt"), "w")
+=======
+        if os.path.exists(self.config.log_dir+'/exper'):
+            shutil.rmtree(self.config.log_dir+'/exper')
+        os.mkdir(self.config.log_dir+'/exper')
+        txt_file = open(os.path.join(self.config.log_dir+'/exper', "hyperparams.txt"), "w")
+>>>>>>> 3fff927f68f405575b8aac4372e40810ecc85ddf
         txt_file.write(hyperparams_txt)
         txt_file.close()
-        print (self.config.log_dir)
+        print (self.config.log_dir+'/exper')
         print ('##################')
         print("Observation Space", env.observation_space)
         print("Action Space", env.action_space)
@@ -144,7 +155,7 @@ class AsyncNGAgent(object):
             self.reward_filter = ZFilter((1,), demean=False, clip=10)
 
         # Create summary writer
-        self.summary_writer = tf.summary.FileWriter(self.config.log_dir)
+        self.summary_writer = tf.summary.FileWriter(self.config.log_dir+'/exper')
 
     def init_policy_train_op(self, loss_policy, loss_policy_sampled, wd_dict):
           if self.config.use_adam:
@@ -305,6 +316,7 @@ class AsyncNGAgent(object):
 
         bestepisoderewards = float("-inf")
         avgrets= []
+        timesteps = []
 
         while total_timesteps < self.config.max_timesteps:
             # Generating paths.
@@ -368,8 +380,9 @@ class AsyncNGAgent(object):
                     self.oldaction_dist: action_dist_n}
 
             episoderewards = np.array(
-                [path["rewards"].sum() for path in paths][:-1])
+                [path["rewards"].sum() for path in paths])
             avgrets.append(episoderewards.mean())
+            timesteps.append(total_timesteps)
 
             print ("\n********** Iteration %i ************" % i)
             if episoderewards.mean() >= self.env.spec.reward_threshold:
@@ -461,7 +474,7 @@ class AsyncNGAgent(object):
                 if entropy != entropy:
                     exit(-1)
 
-                with open(config.log_dir + '/monitor.json', "w") as json_file:
+                with open(config.log_dir +'/exper'+ '/monitor.json', "w") as json_file:
                     for line in benchmark_results:
                         json.dump(line, json_file)
                         json_file.write('\n')
@@ -475,7 +488,7 @@ class AsyncNGAgent(object):
                     print(k + ": " + " " * (40 - len(k)) + str(v))
 
             i += 1
-        return avgrets
+        return avgrets, timesteps
 
 
 if __name__ == '__main__':

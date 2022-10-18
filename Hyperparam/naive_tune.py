@@ -24,17 +24,18 @@ name.append(str(args.mom))
 print("hyperparam", '-'.join(name))
 
 logger.configure(args.log_dir, ['csv'], log_suffix='-'.join(name))
+title = range(800)
 
 for values in list(itertools.product(param['kl_desired'], param['lr'])):
     args.kl_desired=values[0]
     args.lr=values[1]
     # args.mom=values[2]
     returns = []
-    seeds = range(3)
 
     checkpoint = 2500
     random.seed(args.seed)
     np.random.seed(args.seed)
+
     tf.set_random_seed(args.seed)
     env = gym.make(args.env_id)
     # if args.use_pixels:
@@ -43,7 +44,7 @@ for values in list(itertools.product(param['kl_desired'], param['lr'])):
     #     env = NormalizedEnv(env)
     env = NormalizedEnv(env)
     agent = AsyncNGAgent(env, args)
-    result = agent.learn()
+    result, steps = agent.learn()
 
     ret = np.array(result)
     print(ret.shape)
@@ -54,8 +55,13 @@ for values in list(itertools.product(param['kl_desired'], param['lr'])):
     name.append(str(args.seed))
     print("hyperparam", '-'.join(name))
     logger.logkv("hyperparam", '-'.join(name))
-    for n in range(ret.shape[0]):
-        logger.logkv(str((n + 1) * checkpoint), ret[n])
-    logger.dumpkvs()
-    tf.reset_default_graph()
 
+    for n in range(len(steps)):
+        logger.logkv(str(title[n]), ret[n])
+    logger.dumpkvs()
+    logger.logkv("hyperparam",'time'+ '-'.join(name))
+    for n in range(len(steps)):
+        logger.logkv(str(title[n]), steps[n])
+    logger.dumpkvs()
+
+    tf.reset_default_graph()
