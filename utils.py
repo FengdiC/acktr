@@ -1,6 +1,6 @@
 import numpy as np
-import tensorflow as tf
-tf.compat.v1.disable_v2_behavior()
+import tensorflow.compat.v1 as tf
+# tf.compat.v1.disable_v2_behavior()
 import random
 import scipy.signal
 import scipy.optimize
@@ -110,8 +110,6 @@ def rollout(env, agent, max_pathlength, n_timesteps):
             timesteps_sofar+=1
             if res[2]:
                 terminated = True
-                break
-            if timesteps_sofar == n_timesteps:
                 break
 
         path = {"obs": np.concatenate(np.expand_dims(obs, 0)),
